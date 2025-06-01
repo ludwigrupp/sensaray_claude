@@ -1,0 +1,65 @@
+# TRIAL CONFIGURATION - Sensaray System
+########## Basic Settings
+sensaray_type: 'TRIAL_MODE'           # Trial mode without hardware or BO2_400_noIR;BO2_400_EVO, BO2_400_iTEC, BO3_400_noIR systems with 1-2 CMOS- and EVO IR-Sensor, iTec IR-Sensor ot no IR-Sensor!
+
+line_number: 0
+lineID: 'LineID_0'
+line_name: 'TEST_L00'
+work_dir: './data/'
+
+########## Image Processing Settings
+hsv_pixel_threshold: 20                # Contamination detection threshold
+hsv_pixel_threshold_max: 20000000         # Maximum threshold
+entropy_threshold: 5.0                 # Image entropy threshold
+brightness_threshold: 0.4              # Brightness threshold
+hsv_yellow_percent_threshold: 20       # Yellow pixel percentage
+
+########## HSV Color Ranges
+hsv_yellow_lower_bound: [5, 10, 70]    # Yellow detection range
+hsv_yellow_upper_bound: [60, 255, 255]
+s_min: 30                              # Saturation minimum
+v_min: 70                              # Value minimum
+
+########## System Behavior
+show_pics: true                        # Display processed images
+show_every_x_pic: 5                   # Display frequency
+write_temperatures: true              # No thermal writing in trial
+check_for_contamination: true          # Enable contamination detection
+build_hsv_mask: false                 # Don't build mask in trial
+send_alerts: true                     # No alerts in trial mode
+
+########## Trial-Specific Settings
+trial_mode: true                       # Enable trial features
+use_test_images: true                 # Process test images
+test_image_dir: './data/test_images/alert/' # Test image directory
+mock_thermal_temp: 15.0               # Simulated temperature
+
+########## Rate Limiting
+time_delay_anomaly: 5                 # Seconds between anomaly detections
+max_anomalies_per_hour: 10           # Maximum alerts per hour
+looptime: 300                        # Run for 5 minutes in trial
+
+########## Logging
+log_level: 'INFO'                    # Logging verbosity
+auto_reboot: false                   # No reboot in trial mode
+
+########## Thermal Settings (mock)
+cft_left_cutoff: 0                    # check_for_temperature_left_cutoff
+cft_right_cutoff: 0                   # check_for_temperature_right_cutoff 
+max_product_temperature: 20           # Maximum product temperature
+
+########## Frame Processing
+cfc_left_cutoff: 400                  # Crop frame left cutoff
+cfc_right_cutoff: 400                 # Crop frame right cutoff
+mask_radius: 50                       # Mask radius for contamination detection
+buffersize: 10                        # Buffer size (not used in trial)
+
+########## Camera Settings (not used in trial but required)
+cam0_width: 1000
+cam0_height: 1000
+cam0_offset_x: 0
+cam0_offset_y: 0
+cam0_gain_auto: 'Off'
+cam0_gain: 20.0
+cam0_exposure_auto: 'Off'
+cam0_exposure_time: 1000.0

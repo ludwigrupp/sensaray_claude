@@ -1,0 +1,88 @@
+Sensaray Trial Installation Guide
+🚀 Quick Setup Steps
+1. Create Directory Structure
+sensaray_trial/
+├── sensaray.py              # Main application
+├── class_Settings.py        # Configuration management
+├── class_Misc.py           # Utility functions
+├── class_HSVcalc.py        # HSV processing
+├── class_Arena.py          # Camera interface
+├── class_EvoThermal.py     # Thermal sensor
+├── trial_config.yaml       # Trial configuration
+├── requirements.txt        # Dependencies
+├── logs/                   # Log files (auto-created)
+├── data/
+│   ├── upload/             # Output images (auto-created)
+│   ├── get_pics/          # Captured images (auto-created)
+│   ├── HSV_masks/         # HSV training data (auto-created)
+│   └── test_images/       # Test images (auto-created)
+└── README.md
+2. Install Python Dependencies
+bash
+pip install -r requirements.txt
+3. Update Configuration File
+Rename trial_config.yaml to init_config_LDBG_L31_ID2.yaml (or update the path in class_Settings.py)
+
+4. Run the Trial
+bash
+python sensaray.py
+🎯 What the Trial Does
+✅ Processes test images instead of live camera feeds
+✅ Simulates thermal data with configurable temperature
+✅ Runs contamination detection on sample images
+✅ Shows real-time display of processing results
+✅ Logs all activities for review
+✅ Creates output files in the data directory
+✅ Tests HSV processing with sample contamination
+
+📊 Trial Outputs
+After running, you'll see:
+
+Console output with processing statistics
+Log files in logs/ directory
+Processed images in data/upload/
+Live display window showing detection results
+🔧 Customizing the Trial
+You can modify trial_config.yaml to:
+
+Adjust detection thresholds
+Change processing parameters
+Modify loop duration
+Enable/disable features
+🏭 Upgrading to Production
+To use with real hardware:
+
+Install Arena SDK for cameras
+Connect thermal sensors
+Change sensaray_type from 'TRIAL_MODE' to your actual system type
+Update camera parameters in config
+Set trial_mode: false
+🐛 Troubleshooting
+Issue: "Configuration file not found"
+
+Make sure trial_config.yaml is renamed to init_config_LDBG_L31_ID2.yaml
+Or update the CONFIG_FILE path in class_Settings.py
+Issue: "No test images available"
+
+The trial will auto-create sample images in data/test_images/
+You can add your own images to this directory
+Issue: OpenCV display not working
+
+Make sure you have a display environment (not running headless)
+Set show_pics: false in config to disable display
+📝 Key Configuration Options
+yaml
+# Essential trial settings
+sensaray_type: 'TRIAL_MODE'     # Enables trial mode
+trial_mode: true                # Additional trial features
+looptime: 300                   # Run duration (seconds)
+show_pics: true                 # Enable/disable display
+hsv_pixel_threshold: 20         # Contamination sensitivity
+🔄 Next Steps
+Run the trial to familiarize yourself with the system
+Experiment with different threshold values
+Add your own test images
+Review the log files to understand the processing flow
+When ready, configure for your production hardware
+Need help? Check the log files in the logs/ directory for detailed information about what the system is doing.
+
