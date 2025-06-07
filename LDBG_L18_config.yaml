@@ -1,10 +1,10 @@
-# TRIAL CONFIGURATION - Sensaray System
+# CONFIGURATION - Sensaray System
 ########## Basic Settings
 sensaray_type: 'BO2_400_noIR'           # Trial mode without hardware or BO2_400_noIR;BO2_400_EVO, BO2_400_iTEC, BO3_400_noIR systems with 1-2 CMOS- and EVO IR-Sensor, iTec IR-Sensor ot no IR-Sensor!
 
-line_number: 0
+line_number: 6
 lineID: 'LineID_6'
-line_name: 'LDBG_L07'
+line_name: 'LDBG_L18'
 work_dir: './data/'
 
 ########## Image Processing Settings
@@ -22,11 +22,11 @@ v_min: 70                              # Value minimum
 
 ########## System Behavior
 show_pics: true                        # Display processed images
-show_every_x_pic: 5                   # Display frequency
-write_temperatures: true              # No thermal writing in trial
+show_every_x_pic: 5                    # Display frequency
+write_temperatures: true               # No thermal writing in trial
 check_for_contamination: true          # Enable contamination detection
-build_hsv_mask: false                 # Don't build mask in trial
-send_alerts: true                     # No alerts in trial mode
+build_hsv_mask: false                  # Don't build mask in trial
+send_alerts: true                      # No alerts in trial mode
 
 ########## Trial-Specific Settings
 trial_mode: False # true                       # Enable trial features
@@ -55,11 +55,11 @@ mask_radius: 50                       # Mask radius for contamination detection
 buffersize: 10                        # Buffer size (not used in trial)
 
 ########## Camera Settings (not used in trial but required)
-cam0_width: 1000
+cam0_width: 5472
 cam0_height: 1000
-cam0_offset_x: 0
-cam0_offset_y: 0
+cam0_offset_x: 0000
+cam0_offset_y: 2000
 cam0_gain_auto: 'Off'
-cam0_gain: 20.0
+cam0_gain: 20.000000
 cam0_exposure_auto: 'Off'
-cam0_exposure_time: 1000.0
+cam0_exposure_time: 1000.000000
