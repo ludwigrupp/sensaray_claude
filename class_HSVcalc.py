@@ -3,519 +3,376 @@ import numpy as np
 import cv2
 import os
 import time
-import shutil
+# import shutil # No longer directly used by remaining methods, consider removing if not needed elsewhere
 from datetime import datetime
 from typing import Tuple, List, Dict, Any, Optional
 from pathlib import Path
 import logging
-from collections import deque
+# from collections import deque # No longer used by remaining methods
 
 logger = logging.getLogger(__name__)
 
 class HSVProcessingError(Exception):
-    """Raised when HSV processing encounters an error."""
+    """Custom exception raised when HSV processing or mask operations encounter an error."""
     pass
 
 class HSVCalculator:
-    """HSV-based contamination detection with optimized processing."""
-    
-    def __init__(self, config: Dict[str, Any]):
-        self.config = config
-        self.work_dir = Path(config["work_dir"])
-        self.hsv_work_dir = self.work_dir / "HSV_masks"
-        self.hsv_work_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Cache for metallic color definitions
-        self._metallic_colors = self._initialize_metallic_colors()
+    """
+    Handles HSV-based image processing tasks such as contamination detection and HSV mask management.
+    Optimized methods using Numba are included for performance-critical operations.
+    Archived functions (related to metallic colors, specific fill algorithms, and direct mask writing)
+    have been removed from this class and are expected to be in archive.py or replaced by new workflows.
+    """
 
-    def _initialize_metallic_colors(self) -> List[Tuple]:
-        """Initialize metallic color definitions."""
-        return [
-            (0, 180, 0, 25, 204, 255, "Silver"),
-            (0, 180, 0, 50, 76, 204, "Gray Metal"),
-            (20, 28, 128, 230, 153, 255, "Gold"),
-            (10, 18, 128, 230, 128, 230, "Copper"),
-            (100, 120, 51, 128, 128, 230, "Steel Blue"),
-            (29, 35, 128, 204, 102, 204, "Bronze")
-        ]
+    def __init__(self, config: Dict[str, Any]):
+        """
+        Initializes the HSVCalculator with configuration.
+        Args:
+            config: A dictionary containing settings, including 'work_dir' and 'line_name'.
+        """
+        self.config = config
+        # Ensure 'work_dir' is present in config, otherwise default or raise error
+        if "work_dir" not in config:
+            # Defaulting work_dir, but ideally this should be guaranteed by config loading
+            logger.warning("'work_dir' not found in config, defaulting to './temp_hsv_work'. This might be an issue.")
+            self.work_dir = Path("./temp_hsv_work")
+        else:
+            self.work_dir = Path(config["work_dir"])
+
+        self.hsv_mask_dir = self.work_dir / "HSV_masks" # Renamed for clarity
+        self.hsv_mask_dir.mkdir(parents=True, exist_ok=True)
+
+        # Metallic colors related attributes removed as methods are archived.
+        # self._metallic_colors = []
+
+    # _initialize_metallic_colors method (and its use in __init__) removed - archived.
 
     def load_hsv_mask(self) -> Tuple[np.ndarray, float]:
-        """Load HSV mask with proper error handling and validation."""
-        hsv_file_path = self.hsv_work_dir / f"HSV_mask_{self.config['line_name']}.npy"
-        
-        try:
-            if hsv_file_path.exists():
-                hsv_mask = np.load(hsv_file_path).astype(np.uint8)
-                
-                # Validate mask dimensions
-                if hsv_mask.shape != (180, 256, 256):
-                    raise HSVProcessingError(f"Invalid HSV mask dimensions: {hsv_mask.shape}")
-                
-                pixel_count = np.sum(hsv_mask > 0)
-                total_pixels = 180 * 256 * 256
-                percentage = round((pixel_count / total_pixels) * 100, 2)
-                
-                logger.info(f"Loaded HSV mask: {hsv_file_path}")
-                return hsv_mask, percentage
-                
-            else:
-                if self.config.get("build_hsv_mask", False):
-                    hsv_mask = np.zeros((180, 256, 256), dtype=np.uint8)
-                    logger.warning(f"HSV mask not found at {hsv_file_path}, created empty mask")
-                    waiter = input('.............waiting here as HSV_mask was not found')
-                    return hsv_mask, 0.0
-                else:
-                    # Create a basic mask for trial mode
-                    hsv_mask = np.zeros((180, 256, 256), dtype=np.uint8)
-                    # Fill with some basic "good" values for yellow/normal colors
-                    hsv_mask[10:40, 50:255, 80:255] = 1  # Yellow range
-                    logger.warning(f"Created basic HSV mask for trial/demo mode as {hsv_file_path} not found! ")
-                    waiter = input('.............waiting here as HSV_mask was not found') 
-                    return hsv_mask, 5.0
-                    
-        except Exception as e:
-            logger.error(f"Error loading HSV mask: {e}")
-            # Return basic mask instead of failing
-            hsv_mask = np.zeros((180, 256, 256), dtype=np.uint8)
-            hsv_mask[10:40, 50:255, 80:255] = 1  # Basic yellow range
-            return hsv_mask, 1.0
+        """
+        Loads the 3D HSV mask from a .npy file specific to the configured line_name.
+        If the mask file doesn't exist, it creates and returns a default or trial mode mask.
+        Validates mask dimensions and calculates the percentage of active (allowed) pixels.
 
-    def save_hsv_mask(self, hsv_mask: np.ndarray, percentage: float) -> None:
-        """Save HSV mask with backup and validation."""
+        Returns:
+            A tuple containing:
+                - hsv_mask (np.ndarray): The loaded or newly created 3D HSV mask (H,S,V).
+                - percentage_active (float): The percentage of non-zero entries in the mask.
+
+        Raises:
+            HSVProcessingError: If a mask is critical and cannot be loaded or created.
+        """
+        line_name = self.config.get('line_name', 'default_line') # Use default if not in config
+        hsv_mask_filename = f"HSV_mask_{line_name}.npy"
+        hsv_file_path = self.hsv_mask_dir / hsv_mask_filename
+
+        default_mask_shape = (180, 256, 256) # H: 0-179, S: 0-255, V: 0-255
+
         try:
-            # Validate input
-            if hsv_mask.shape != (180, 256, 256):
-                raise ValueError(f"Invalid HSV mask shape: {hsv_mask.shape}")
-            
-            hsv_file_path = self.hsv_work_dir / f"HSV_mask_{self.config['line_name']}.npy"
-            
-            # Save main mask
-            np.save(hsv_file_path, hsv_mask)
-            
-            # Save timestamped version
-            timestamp = datetime.now().strftime('D_%Y-%m-%d_T_%H_%M_%S')
-            timestamped_path = self.hsv_work_dir / f"HSV_mask_{self.config['line_name']}_{percentage}_{timestamp}.npy"
-            np.save(timestamped_path, hsv_mask)
-            
-            logger.info(f"HSV mask saved: {percentage}% pixels active")
-            
+            if hsv_file_path.is_file(): # More robust check than .exists() for files
+                hsv_mask = np.load(hsv_file_path).astype(np.uint8)
+
+                if hsv_mask.shape != default_mask_shape:
+                    logger.error(f"Loaded HSV mask from {hsv_file_path} has invalid dimensions: {hsv_mask.shape}. Expected {default_mask_shape}. Recreating a default mask.")
+                    # This situation should ideally trigger a rebuild or error state.
+                    raise HSVProcessingError(f"Invalid HSV mask dimensions from file: {hsv_mask.shape}")
+
+                active_pixels = np.sum(hsv_mask > 0)
+                total_pixels = np.prod(default_mask_shape)
+                percentage_active = round((active_pixels / total_pixels) * 100, 3) if total_pixels > 0 else 0.0
+
+                logger.info(f"Successfully loaded HSV mask from: {hsv_file_path} ({percentage_active}% active pixels).")
+                return hsv_mask, percentage_active
+            else:
+                logger.warning(f"HSV mask file not found at {hsv_file_path}. Creating a new default mask.")
+                hsv_mask = np.zeros(default_mask_shape, dtype=np.uint8) # Start with an empty mask
+
+                # Behavior for missing mask depends on configuration (e.g., trial mode, build mode)
+                is_trial_mode = self.config.get('sensaray_type') == 'TRIAL_MODE'
+                is_build_mode = self.config.get("build_hsv_mask", False)
+
+                if is_trial_mode or is_build_mode:
+                    # For trial or initial build mode, a more permissive default might be desired,
+                    # or specific ranges can be pre-allowed.
+                    # Example: allow a common range for "good" product colors like yellows/greens.
+                    hsv_mask[15:55, 80:255, 80:255] = 1  # Broad Yellow-Greenish range
+                    message = "TRIAL_MODE" if is_trial_mode else "BUILD_HSV_MASK active"
+                    logger.info(f"{message}: Created a default HSV mask as none was found. This mask may need training/building.")
+                    # Consider prompting user only if interactive mode is intended
+                    # input(f"{message}: Default HSV mask created. Press Enter to continue...")
+                else:
+                    # If not trial/build mode, a missing mask might be a critical error.
+                    logger.error("HSV mask not found and not in TRIAL or BUILD_HSV_MASK mode. Application might not function correctly with an empty mask.")
+                    # Depending on requirements, could raise HSVProcessingError here.
+                    # For now, returns the empty mask, downstream logic must handle it.
+
+                active_pixels = np.sum(hsv_mask > 0)
+                total_pixels = np.prod(default_mask_shape)
+                percentage_active = round((active_pixels / total_pixels) * 100, 3) if total_pixels > 0 else 0.0
+                return hsv_mask, percentage_active
+
         except Exception as e:
-            logger.error(f"Error saving HSV mask: {e}")
+            logger.error(f"General error loading or creating HSV mask from {hsv_file_path}: {e}", exc_info=True)
+            # Fallback to a minimal, safe mask in case of any unexpected error
+            hsv_mask = np.zeros(default_mask_shape, dtype=np.uint8)
+            hsv_mask[20:30, 100:200, 100:200] = 1  # A very small default "safe" yellow range
+            logger.critical("CRITICAL: Returning an emergency minimal HSV mask due to previous errors. Functionality will be limited.")
+            return hsv_mask, np.sum(hsv_mask > 0) / np.prod(default_mask_shape) * 100
+
+
+    def save_hsv_mask(self, hsv_mask: np.ndarray, percentage_active: float) -> None:
+        """
+        Saves the provided 3D HSV mask to a .npy file. Also creates a timestamped backup.
+        Args:
+            hsv_mask: The HSV mask (3D NumPy array) to save.
+            percentage_active: The percentage of active pixels, included in the backup filename.
+        Raises:
+            HSVProcessingError: If the mask is invalid or saving fails.
+        """
+        if not isinstance(hsv_mask, np.ndarray) or hsv_mask.shape != (180, 256, 256):
+            raise HSVProcessingError(f"Invalid HSV mask object or shape for saving. Shape: {hsv_mask.shape if isinstance(hsv_mask, np.ndarray) else 'Not a NumPy array'}")
+
+        line_name = self.config.get('line_name', 'default_line')
+        hsv_mask_filename = f"HSV_mask_{line_name}.npy"
+        hsv_file_path = self.hsv_mask_dir / hsv_mask_filename
+
+        try:
+            # Ensure dtype is uint8 for masks (0 or 1)
+            hsv_mask_to_save = hsv_mask.astype(np.uint8)
+
+            np.save(hsv_file_path, hsv_mask_to_save)
+            logger.info(f"Main HSV mask saved successfully to: {hsv_file_path}")
+
+            # Create timestamped backup
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3] # Milliseconds precision
+            perc_str = f"{percentage_active:.2f}".replace('.', 'p') # Format percentage for filename
+            backup_filename = f"HSV_mask_{line_name}_P{perc_str}_{timestamp}.npy"
+            backup_file_path = self.hsv_mask_dir / backup_filename
+            np.save(backup_file_path, hsv_mask_to_save)
+            logger.info(f"Timestamped HSV mask backup saved to: {backup_file_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to save HSV mask to {hsv_file_path} and/or its backup: {e}", exc_info=True)
             raise HSVProcessingError(f"Failed to save HSV mask: {e}")
 
+
     @staticmethod
-    @numba.jit(nopython=True, parallel=True)
+    @numba.jit(nopython=True, parallel=True, fastmath=True)
     def _check_contamination_vectorized(
-        hsv_frame: np.ndarray, 
+        hsv_frame: np.ndarray,
         hsv_mask: np.ndarray
     ) -> Tuple[int, List[Tuple[int, int]], List[Tuple[int, int, int]]]:
-        """Optimized contamination check using Numba compilation."""
+        """Numba-optimized: Checks frame against HSV mask for disallowed pixels (contaminants)."""
         height, width = hsv_frame.shape[:2]
-        no_match_counter = 0
-        max_detections = 10000  # Limit to prevent memory issues
-        
-        # Pre-allocate arrays
-        xy_positions = []
-        hsv_values = []
-        
-        for row in numba.prange(height):
-            if no_match_counter >= max_detections:
-                break
-            for col in range(width):
-                if no_match_counter >= max_detections:
-                    break
-                    
-                h = hsv_frame[row, col, 0]
-                s = hsv_frame[row, col, 1]
-                v = hsv_frame[row, col, 2]
-                
-                if hsv_mask[h, s, v] == 0:
-                    xy_positions.append((col, row))
-                    hsv_values.append((h, s, v))
-                    no_match_counter += 1
-        
-        return no_match_counter, xy_positions, hsv_values
+        contaminant_count = 0
+        max_to_store = 5000 # Limit stored contaminant details to prevent excessive memory with numba lists
+
+        # Numba requires list types to be known or inferred. For tuples, it's usually fine.
+        xy_contaminant_coords = []
+        hsv_contaminant_values = []
+
+        for r in numba.prange(height): # Parallelize outer loop
+            # Local counter for this thread if needed, though global counter update needs care (not done here for simplicity)
+            # For now, assuming `contaminant_count` update is okay due to how numba handles reductions or if GIL is released.
+            # More robust for parallel counting might involve per-thread lists then merging.
+            # However, numba list append is thread-safe.
+            if contaminant_count >= max_to_store * 2 and len(xy_contaminant_coords) >= max_to_store : # Heuristic to stop early if too many total contaminants
+                 continue
+
+            for c in range(width):
+                h, s, v = hsv_frame[r, c, 0], hsv_frame[r, c, 1], hsv_frame[r, c, 2]
+
+                if hsv_mask[h, s, v] == 0: # 0 indicates a disallowed (contaminant) HSV value
+                    if len(xy_contaminant_coords) < max_to_store: # Store details only up to a limit
+                        xy_contaminant_coords.append((c, r)) # Store as (x,y)
+                        hsv_contaminant_values.append((h, s, v))
+                    contaminant_count += 1
+
+        return contaminant_count, xy_contaminant_coords, hsv_contaminant_values
+
 
     @staticmethod
-    @numba.jit(nopython=True, parallel=True)
+    @numba.jit(nopython=True, parallel=True, fastmath=True)
     def _build_hsv_mask_vectorized(
-        hsv_frame: np.ndarray, 
-        hsv_mask: np.ndarray, 
-        s_min: int, 
-        v_min: int
+        hsv_frame: np.ndarray,
+        hsv_mask_to_update: np.ndarray,
+        s_min_thresh: int,
+        v_min_thresh: int,
+        v_max_thresh_for_dark_pixels: int # e.g. 30, for allowing dark (but saturated) pixels
     ) -> Tuple[np.ndarray, int]:
-        """Build HSV mask using vectorized operations."""
+        """Numba-optimized: Updates hsv_mask by adding pixels from hsv_frame meeting S/V criteria."""
         height, width = hsv_frame.shape[:2]
-        new_pixels = 0
-        
-        for row in numba.prange(height):
-            for col in range(width):
-                h = hsv_frame[row, col, 0]
-                s = hsv_frame[row, col, 1]
-                v = hsv_frame[row, col, 2]
-                
-                # Apply S and V thresholds
-                if (s > s_min and v > v_min) or (s > s_min and v < 30):
-                    if hsv_mask[h, s, v] == 0:
-                        hsv_mask[h, s, v] = 1
-                        new_pixels += 1
-        
-        return hsv_mask, new_pixels
+        newly_added_pixels_count = 0
+
+        # Create a copy inside the Numba function if hsv_mask_to_update should not be modified in place by caller
+        # For now, assumes it can be modified. Numba often works on copies for arrays unless specified.
+        # Let's ensure it's clear: this function MODIFIES hsv_mask_to_update.
+
+        for r in numba.prange(height):
+            for c in range(width):
+                h, s, v = hsv_frame[r, c, 0], hsv_frame[r, c, 1], hsv_frame[r, c, 2]
+
+                # Condition for adding to mask:
+                # Pixel must be saturated enough (s > s_min_thresh) AND
+                # EITHER bright enough (v > v_min_thresh) OR dark enough (v < v_max_thresh_for_dark_pixels)
+                # This allows common product colors as well as potentially dark markings/text.
+                is_valid_color = (s > s_min_thresh) and \
+                                 ((v > v_min_thresh) or (v < v_max_thresh_for_dark_pixels))
+
+                if is_valid_color:
+                    if hsv_mask_to_update[h, s, v] == 0: # If this HSV tuple is not yet in the mask
+                        hsv_mask_to_update[h, s, v] = 1  # Add it to the mask (mark as allowed)
+                        newly_added_pixels_count += 1
+
+        return hsv_mask_to_update, newly_added_pixels_count
+
 
     def check_frame_for_contamination(
-        self, 
-        bgr_frame: np.ndarray, 
+        self,
+        bgr_frame: np.ndarray,
         hsv_mask: np.ndarray
     ) -> Tuple[int, np.ndarray, List[Tuple[int, int, int]]]:
-        """Check frame for contamination with optimized processing."""
-        try:
-            if bgr_frame is None or bgr_frame.size == 0:
-                raise ValueError("BGR frame is empty or None")
-            
-            # Convert to HSV
-            hsv_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
-            
-            # Use optimized contamination check
-            no_match_count, xy_positions, hsv_values = self._check_contamination_vectorized(
-                hsv_frame, hsv_mask
-            )
-            
-            # Create visualization mask
-            contamination_mask = np.zeros_like(bgr_frame)
-            mask_radius = self.config.get("mask_radius", 200)
-            
-            for position in xy_positions[:1000]:  # Limit visualizations
-                cv2.circle(
-                    contamination_mask, 
-                    position, 
-                    mask_radius, 
-                    (255, 255, 255), 
-                    -1
-                )
-                cv2.rectangle(
-                    contamination_mask,
-                    (position[0] - 10, position[1] - 10),
-                    (position[0] + 10, position[1] + 10),
-                    (0, 0, 0),
-                    1
-                )
-            
-            return no_match_count, contamination_mask, hsv_values
-            
-        except Exception as e:
-            logger.error(f"Error in contamination check: {e}")
-            # Return safe defaults
+        """
+        Checks a BGR frame for contamination using the provided HSV mask.
+        Returns: (contamination_count, visual_contamination_mask, list_of_contaminant_hsv_values)
+        """
+        if bgr_frame is None or bgr_frame.size == 0:
+            logger.error("Cannot check empty BGR frame for contamination.")
+            return 0, np.zeros((100,100,3), dtype=np.uint8), [] # Sensible defaults for error
+        if hsv_mask is None or hsv_mask.shape != (180,256,256):
+            logger.error("Invalid or missing HSV mask for contamination check.")
             return 0, np.zeros_like(bgr_frame), []
 
+
+        try:
+            hsv_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
+
+            count, positions, hsv_values = self._check_contamination_vectorized(hsv_frame, hsv_mask)
+
+            # Create a visual representation of contaminations
+            vis_mask = np.zeros_like(bgr_frame, dtype=np.uint8)
+            marker_radius = self.config.get("contamination_marker_radius", 3) # Small radius for markers
+            max_markers = self.config.get("max_contamination_markers_on_image", 500)
+
+            for i, pos in enumerate(positions):
+                if i >= max_markers: break
+                cv2.circle(vis_mask, pos, marker_radius, (0, 0, 255), -1) # Red dots for contaminants
+
+            return count, vis_mask, hsv_values
+
+        except cv2.error as cv_err:
+            logger.error(f"OpenCV error in contamination check: {cv_err}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Unexpected error in contamination check: {e}", exc_info=True)
+
+        return 0, np.zeros_like(bgr_frame), [] # Fallback
+
+
     def build_hsv_mask_from_frame(
-        self, 
-        bgr_frame: np.ndarray, 
-        hsv_mask: np.ndarray
+        self,
+        bgr_frame: np.ndarray,
+        existing_hsv_mask: np.ndarray # Current mask to be updated
     ) -> Tuple[np.ndarray, int]:
-        """Build HSV mask from frame with validation."""
+        """
+        Updates an existing HSV mask with new color information from a BGR frame.
+        Returns: (updated_hsv_mask, number_of_new_pixels_added)
+        """
+        if bgr_frame is None or bgr_frame.size == 0:
+            logger.error("Cannot build HSV mask from empty BGR frame.")
+            return existing_hsv_mask, 0
+        if existing_hsv_mask is None or existing_hsv_mask.shape != (180,256,256):
+            logger.error("Invalid existing HSV mask provided for building.")
+            # Could return a new empty mask, or current one if partially valid
+            return np.zeros((180,256,256), dtype=np.uint8), 0
+
+
         try:
-            if bgr_frame is None or bgr_frame.size == 0:
-                raise ValueError("BGR frame is empty or None")
-            
             hsv_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
-            
-            s_min = self.config.get("s_min", 30)
-            v_min = self.config.get("v_min", 70)
-            
-            updated_mask, new_pixels = self._build_hsv_mask_vectorized(
-                hsv_frame, hsv_mask, s_min, v_min
+
+            s_min = self.config.get("hsv_build_s_min_threshold", 40) # Default S threshold
+            v_min = self.config.get("hsv_build_v_min_threshold", 50) # Default V threshold for bright
+            v_max_dark = self.config.get("hsv_build_v_max_dark_threshold", 30) # Default V threshold for dark colors
+
+            # Pass a copy of the mask to Numba func if it shouldn't modify original `existing_hsv_mask` directly
+            # Or if Numba's array passing semantics are unclear for the specific version/case.
+            # Numba usually works on array views if possible, but copy() ensures safety.
+            updated_mask, num_new = self._build_hsv_mask_vectorized(
+                hsv_frame, existing_hsv_mask.copy(), s_min, v_min, v_max_dark
             )
-            
-            return updated_mask, new_pixels
-            
-        except Exception as e:
-            logger.error(f"Error building HSV mask: {e}")
-            return hsv_mask, 0
 
-    def remove_blue_values(
-        self, 
+            if num_new > 0:
+                logger.info(f"Added {num_new} new HSV combinations to the mask from the frame.")
+
+            return updated_mask, num_new
+        except cv2.error as cv_err:
+            logger.error(f"OpenCV error in HSV mask building: {cv_err}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Unexpected error in HSV mask building: {e}", exc_info=True)
+
+        return existing_hsv_mask, 0 # Fallback
+
+
+    def remove_blue_values_from_mask(
+        self,
         hsv_mask: np.ndarray,
-        h_min: int = 100, 
-        h_max: int = 135,
-        s_min: int = 156, 
-        s_max: int = 256, 
-        v_min: int = 156, 
-        v_max: int = 256
+        h_range: Tuple[int,int] = (90, 135),  # Typical Hue for blues: 90-135
+        s_range: Tuple[int,int] = (50, 255),  # Saturation: reasonably saturated blues
+        v_range: Tuple[int,int] = (50, 255)   # Value: reasonably bright blues
     ) -> np.ndarray:
-        """Remove blue HSV values from mask for white belt processing."""
-        try:
-            # Validate input
-            if hsv_mask.shape != (180, 256, 256):
-                raise ValueError(f"Invalid HSV mask shape: {hsv_mask.shape}")
-            
-            # Remove blue values
-            hsv_mask[h_min:h_max, s_min:s_max, v_min:v_max] = 0
-            logger.info(f"Removed blue values from HSV mask: H[{h_min}:{h_max}], S[{s_min}:{s_max}], V[{v_min}:{v_max}]")
-            
-            return hsv_mask
-            
-        except Exception as e:
-            logger.error(f"Error removing blue values: {e}")
-            return hsv_mask
+        """Removes specified blue HSV values from the mask (sets them to 0)."""
+        if hsv_mask is None or hsv_mask.shape != (180, 256, 256):
+            logger.error("Invalid HSV mask for blue removal.")
+            return hsv_mask if hsv_mask is not None else np.zeros((180,256,256),dtype=np.uint8)
 
-    @staticmethod
-    @numba.jit(nopython=True)
-    def _identify_metallic_color(h: int, s: int, v: int) -> int:
-        """Identify metallic color using compiled function."""
-        # Metallic color definitions (encoded as tuples)
-        metallic_ranges = [
-            (0, 180, 0, 25, 204, 255),    # Silver
-            (0, 180, 0, 50, 76, 204),     # Gray Metal  
-            (20, 28, 128, 230, 153, 255), # Gold
-            (10, 18, 128, 230, 128, 230), # Copper
-            (100, 120, 51, 128, 128, 230), # Steel Blue
-            (29, 35, 128, 204, 102, 204)   # Bronze
-        ]
-        
-        for i, (h_min, h_max, s_min, s_max, v_min, v_max) in enumerate(metallic_ranges):
-            if h_min <= h <= h_max and s_min <= s <= s_max and v_min <= v <= v_max:
-                return i
-        return -1  # No metallic color
-
-    def check_metallic_colors(self, bgr_frame: np.ndarray) -> Tuple[int, List[Tuple[int, int]], List[str]]:
-        """Check frame for metallic colors with optimized processing."""
         try:
-            hsv_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
-            height, width = hsv_frame.shape[:2]
-            
-            metallic_positions = []
-            metallic_types = []
-            metallic_count = 0
-            max_detections = 200
-            
-            color_names = ["Silver", "Gray Metal", "Gold", "Copper", "Steel Blue", "Bronze"]
-            
-            for row in range(height):
-                if metallic_count >= max_detections:
-                    break
-                for col in range(width):
-                    if metallic_count >= max_detections:
-                        break
-                        
-                    h, s, v = hsv_frame[row, col]
-                    color_index = self._identify_metallic_color(h, s, v)
-                    
-                    if color_index >= 0:
-                        metallic_positions.append((col, row))
-                        metallic_types.append(color_names[color_index])
-                        metallic_count += 1
-            
-            return metallic_count, metallic_positions, metallic_types
-            
-        except Exception as e:
-            logger.error(f"Error checking metallic colors: {e}")
-            return 0, [], []
+            h_min, h_max = max(0, h_range[0]), min(180, h_range[1]) # Clamp H to 0-179
+            s_min, s_max = max(0, s_range[0]), min(256, s_range[1]) # Clamp S,V to 0-255
+            v_min, v_max = max(0, v_range[0]), min(256, v_range[1])
 
-    def apply_morphological_fill(
-        self, 
-        hsv_mask_slice: np.ndarray, 
-        radius: int = 10
-    ) -> np.ndarray:
-        """Apply morphological operations to fill HSV mask regions."""
-        try:
-            # Create disk kernel
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
-            
-            # Apply closing operation to fill gaps
-            filled_mask = cv2.morphologyEx(hsv_mask_slice, cv2.MORPH_CLOSE, kernel)
-            
-            return filled_mask.astype(np.uint8)
-            
-        except Exception as e:
-            logger.error(f"Error in morphological fill: {e}")
-            return hsv_mask_slice
-
-    def fill_area_mask(self, hsv_mask: np.ndarray, distance: int = 1) -> np.ndarray:
-        """Fill HSV mask areas within specified distance."""
-        try:
-            if distance <= 0:
+            if not (h_min < h_max and s_min < s_max and v_min < v_max):
+                logger.warning(f"Invalid range for blue removal: H({h_min}-{h_max}), S({s_min}-{s_max}), V({v_min}-{v_max}). No operation performed.")
                 return hsv_mask
-                
-            # Create a larger kernel for dilation
-            kernel_size = 2 * distance + 1
-            kernel = np.ones((kernel_size, kernel_size), np.uint8)
-            
-            # Process each H slice
-            for h in range(hsv_mask.shape[0]):
-                hsv_mask[h] = cv2.dilate(hsv_mask[h], kernel, iterations=1)
-            
-            return hsv_mask
-            
-        except Exception as e:
-            logger.error(f"Error filling area mask: {e}")
-            return hsv_mask
 
-    def rolling_ball_fill(
-        self, 
-        slice_2d_orig: np.ndarray, 
-        seed: Tuple[int, int] = (255, 255), 
-        radius: int = 10
+            mask_copy = hsv_mask.copy() # Work on a copy
+            mask_copy[h_min:h_max, s_min:s_max, v_min:v_max] = 0 # Set this range to 0 (disallowed)
+
+            removed_count = np.sum(hsv_mask[h_min:h_max, s_min:s_max, v_min:v_max]) - np.sum(mask_copy[h_min:h_max, s_min:s_max, v_min:v_max])
+            logger.info(f"Cleared {removed_count} HSV combinations in the blue range from the mask.")
+            return mask_copy
+        except Exception as e:
+            logger.error(f"Error removing blue values: {e}", exc_info=True)
+        return hsv_mask
+
+
+    def apply_morphological_fill_to_sv_slice( # Renamed for clarity
+        self,
+        sv_plane: np.ndarray, # A 2D (S,V) slice of the HSV mask for a specific Hue
+        kernel_radius: int = 3
     ) -> np.ndarray:
-        """Apply rolling ball flood fill algorithm to HSV mask slice."""
+        """Applies morphological closing to an S-V plane of the HSV mask."""
+        if sv_plane is None or sv_plane.ndim != 2 or sv_plane.shape != (256,256) :
+            logger.error(f"Invalid S-V plane provided for morphological fill. Shape: {sv_plane.shape if isinstance(sv_plane,np.ndarray) else 'None'}")
+            return sv_plane if sv_plane is not None else np.zeros((256,256), dtype=np.uint8)
+        if kernel_radius <= 0:
+            return sv_plane # No operation if radius is non-positive
+
         try:
-            H, W = slice_2d_orig.shape
-
-            # 1. Mirror-pad the original matrix
-            padded = np.pad(slice_2d_orig, pad_width=radius, mode='edge')
-
-            # 2. Adjust seed to padded coordinates
-            seed_padded = (seed[0] + radius, seed[1] + radius)
-
-            # 3. Prepare result and visited arrays
-            visited = np.zeros_like(padded, dtype=bool)
-            result = np.ones_like(padded, dtype=np.uint8)
-
-            # 4. Build disk offsets
-            disk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
-            disk_coords = np.argwhere(disk == 1) - radius
-
-            # 5. Start flood fill
-            queue = deque()
-            queue.append(seed_padded)
-            visited[seed_padded] = True
-            result[seed_padded] = 0
-
-            while queue:
-                s, v = queue.popleft()
-
-                for ds in range(-radius, radius + 1):
-                    for dv in range(-radius, radius + 1):
-                        ns, nv = s + ds, v + dv
-
-                        # Skip if the disk would go outside bounds
-                        if ns - radius < 0 or ns + radius >= padded.shape[0] or nv - radius < 0 or nv + radius >= padded.shape[1]:
-                            continue
-
-                        if visited[ns, nv]:
-                            continue
-
-                        all_inside = True
-                        for offset in disk_coords:
-                            ys, yv = ns + offset[0], nv + offset[1]
-                            if padded[ys, yv] == 1:
-                                all_inside = False
-                                break
-
-                        if all_inside:
-                            visited[ns, nv] = True
-                            result[ns, nv] = 0
-                            queue.append((ns, nv))
-
-            # 6. Crop result back to original shape
-            return result[radius:H+radius, radius:W+radius]
-            
+            # MORPH_ELLIPSE is often good for general purpose filling
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * kernel_radius + 1, 2 * kernel_radius + 1))
+            # MORPH_CLOSE = Dilation followed by Erosion. Fills small holes, connects components.
+            filled_sv_plane = cv2.morphologyEx(sv_plane.astype(np.uint8), cv2.MORPH_CLOSE, kernel, iterations=1)
+            return filled_sv_plane
+        except cv2.error as cv_err:
+            logger.error(f"OpenCV error during morphological fill on S-V slice: {cv_err}", exc_info=True)
         except Exception as e:
-            logger.error(f"Error in rolling ball fill: {e}")
-            return slice_2d_orig
+            logger.error(f"Unexpected error in morphological fill on S-V slice: {e}", exc_info=True)
+        return sv_plane # Return original on error
 
-    def write_hsv_mask_to_dir(
-        self, 
-        hsv_file_name: str, 
-        hsv_mask: np.ndarray, 
-        hsv_file_name_archive: str, 
-        old_hsv_mask: np.ndarray
-    ) -> None:
-        """Write HSV mask to directory with archival."""
-        try:
-            # Check disk space (minimum 1GB)
-            free_space_gb = shutil.disk_usage(self.work_dir).free / (1024**3)
-            
-            if free_space_gb > 1.0:
-                np.save(hsv_file_name, hsv_mask)
-                logger.info(f"HSV mask saved to {hsv_file_name}")
-            else:
-                logger.warning("Insufficient disk space for HSV mask saving")
-                
-            if free_space_gb > 2.0:  # More space needed for archive
-                timestamp = datetime.now()
-                timestamp_string = timestamp.strftime('D_%Y-%m-%d_T_%H_%M_%S_%f')[:-3]
-                archive_filename = f"{hsv_file_name_archive}_{timestamp_string}.npy"
-                np.save(archive_filename, old_hsv_mask)
-                logger.info(f"HSV mask archived to {archive_filename}")
-            else:
-                logger.warning("Insufficient disk space for HSV mask archiving")
-                
-        except Exception as e:
-            logger.error(f"Error writing HSV mask to directory: {e}")
+    # Archived methods previously here:
+    # _identify_metallic_color (static)
+    # check_metallic_colors
+    # fill_area_mask (different from apply_morphological_fill_to_sv_slice)
+    # rolling_ball_fill
+    # write_hsv_mask_to_dir
 
-
-# Legacy compatibility class for existing code
-class HSV_calc:
-    """Legacy compatibility class for existing code."""
-    
-    @staticmethod
-    def load_HSV_mask(config, mylogs):
-        """Legacy compatibility method."""
-        calculator = HSVCalculator(config)
-        return calculator.load_hsv_mask()
-
-    @staticmethod
-    def write_HSV_mask_to_dir(hsv_file_name, hsv_mask, hsv_file_name_archive, old_hsv_mask):
-        """Legacy compatibility method."""
-        # This would need a config object to work properly
-        logger.warning("Using legacy write_HSV_mask_to_dir - migrate to HSVCalculator")
-        
-    @staticmethod
-    def save_HSV_mask(hsv_mask, perc_of_pixels, config, mylogs):
-        """Legacy compatibility method."""
-        calculator = HSVCalculator(config)
-        calculator.save_hsv_mask(hsv_mask, perc_of_pixels)
-
-    @staticmethod
-    @numba.jit(nopython=True)
-    def check_pic_for_contanimation_raw(hsv_frame, hsv_mask):
-        """Legacy compatibility method."""
-        return HSVCalculator._check_contamination_vectorized(hsv_frame, hsv_mask)
-
-    @staticmethod
-    @numba.jit(nopython=True)
-    def build_HSV_mask_from_HSV_frame(hsv_frame, hsv_mask, s_min, v_min):
-        """Legacy compatibility method."""
-        return HSVCalculator._build_hsv_mask_vectorized(hsv_frame, hsv_mask, s_min, v_min)
-
-    @staticmethod
-    def check_pic_for_contanimation(counter, bgr_frame, hsv_mask):
-        """Legacy compatibility method."""
-        logger.warning("Using legacy check_pic_for_contanimation - migrate to HSVCalculator")
-        config = {'mask_radius': 200}  # Default config
-        calculator = HSVCalculator(config)
-        no_match_count, contamination_mask, hsv_values = calculator.check_frame_for_contamination(
-            bgr_frame, hsv_mask
-        )
-        return no_match_count, [], hsv_values  # Note: xy_mask format changed
-
-    @staticmethod
-    def delete_blue_HSV_values(hsv_mask, h_min=100, h_max=135, s_min=156, s_max=256, v_min=156, v_max=256):
-        """Legacy compatibility method."""
-        config = {'line_name': 'legacy'}
-        calculator = HSVCalculator(config)
-        return calculator.remove_blue_values(hsv_mask, h_min, h_max, s_min, s_max, v_min, v_max)
-
-    @staticmethod
-    def rolling_ball_fill(slice_2d_orig, seed=(255, 255), radius=10):
-        """Legacy compatibility method."""
-        config = {'line_name': 'legacy'}
-        calculator = HSVCalculator(config)
-        return calculator.rolling_ball_fill(slice_2d_orig, seed, radius)
-
-    @staticmethod
-    @numba.jit(nopython=True)
-    def identify_metallic_HSV_color(h, s, v):
-        """Legacy compatibility method."""
-        color_index = HSVCalculator._identify_metallic_color(h, s, v)
-        color_names = ["Silver", "Gray Metal", "Gold", "Copper", "Steel Blue", "Bronze"]
-        if color_index >= 0:
-            return color_names[color_index]
-        return "no metallic color"
-
-    @staticmethod
-    def check_pic_for_metallic_HSV_color(bgr_frame):
-        """Legacy compatibility method."""
-        config = {'line_name': 'legacy'}
-        calculator = HSVCalculator(config)
-        return calculator.check_metallic_colors(bgr_frame)
+# Legacy HSV_calc class (and its methods) removed.
+# All usages should be updated to HSVCalculator or functions in archive.py.

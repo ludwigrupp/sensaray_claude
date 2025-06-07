@@ -15,306 +15,291 @@ class ThermalSensorError(Exception):
     pass
 
 class EvoThermalSensor:
-    """Improved EvoThermal sensor interface with better error handling."""
-    
+    """
+    Improved EvoThermal sensor interface with better error handling and clarity.
+    Archived functions (is_running, get_average_temperature) are removed from this class.
+    """
+
     # Class constants
-    VENDOR_ID = ":5740"
-    BAUDRATE = 115200
-    FRAME_HEADER = 13
-    ACK_HEADER = 20
-    FRAME_SIZE = 2068
-    DATA_SIZE = 2064
-    THERMAL_DIMENSIONS = (32, 32)
-    KELVIN_TO_CELSIUS = 273.15
-    DATA_SCALE_FACTOR = 10.0
-    
-    def __init__(self, auto_connect: bool = True):
+    VENDOR_ID = ":5740" # Used to identify the EvoThermal device by its hardware ID
+    BAUDRATE = 115200   # Serial communication baud rate
+    FRAME_HEADER_VALUE = 0x000D # Expected value for a data frame header (e.g., after unpack('<H', bytes))
+                                # This might need adjustment based on exact protocol (e.g. if it's just one byte 0x0D)
+    ACK_HEADER_VALUE = 0x14     # Expected value for an acknowledgment packet header (first byte)
+
+    FRAME_PACKET_SIZE = 2068 # Total size of a data frame packet (header + data + crc)
+    THERMAL_DATA_SIZE_BYTES = 2064 # Size of the actual thermal data payload in bytes (e.g., 32x32 pixels * 2 bytes/pixel)
+    CRC_IN_FRAME_SIZE_BYTES = 4 # Size of CRC in the data frame (e.g., CRC32)
+
+    THERMAL_RESOLUTION = (32, 32) # Native resolution of the thermal sensor
+    KELVIN_TO_CELSIUS_OFFSET = 273.15 # Offset for Kelvin to Celsius conversion
+    DECIKELVIN_SCALE_FACTOR = 10.0    # Sensor data is in deciKelvin, divide by this for Kelvin
+
+    ACK_PACKET_SIZE = 4 # Expected size of an ACK packet (header, len, status, crc8)
+
+    def __init__(self, auto_connect: bool = True, port_path: Optional[str] = None):
+        """
+        Initializes the EvoThermalSensor.
+        Args:
+            auto_connect: If True, attempts to connect to the sensor upon initialization.
+            port_path: Optional specific serial port path to connect to. If None, scans for sensor.
+        """
         self.port: Optional[serial.Serial] = None
         self.serial_lock = threading.Lock()
-        self.is_connected = False
-        
-        # Initialize CRC functions
-        self.crc32 = crcmod.predefined.mkPredefinedCrcFun('crc-32-mpeg')
-        self.crc8 = crcmod.predefined.mkPredefinedCrcFun('crc-8')
-        
-        # Command definitions
-        self.activate_command = bytes([0x00, 0x52, 0x02, 0x01, 0xDF])
-        self.deactivate_command = bytes([0x00, 0x52, 0x02, 0x00, 0xD8])
-        
+        self.is_connected: bool = False
+        self._port_path_override: Optional[str] = port_path # Store user-specified port
+
+        self.crc32_func = crcmod.predefined.mkPredefinedCrcFun('crc-32-mpeg')
+        self.crc8_func = crcmod.predefined.mkPredefinedCrcFun('crc-8')
+
+        self.CMD_ACTIVATE_STREAM = bytes([0x00, 0x52, 0x02, 0x01, 0xDF])
+        self.CMD_DEACTIVATE_STREAM = bytes([0x00, 0x52, 0x02, 0x00, 0xD8])
+
         if auto_connect:
-            self.connect()
+            try:
+                self.connect()
+            except Exception as e:
+                 logger.error(f"Auto-connect failed for EvoThermalSensor: {e}", exc_info=True)
+
 
     def _find_thermal_port(self) -> Optional[str]:
-        """Find EvoThermal device port."""
+        """Scans COM ports for the EvoThermal sensor unless a port_path was specified."""
+        if self._port_path_override:
+            logger.info(f"Attempting to use specified port: {self._port_path_override}")
+            # Basic check if port exists in list of available ports
+            available_ports = [port.device for port in serial.tools.list_ports.comports()]
+            if self._port_path_override in available_ports:
+                return self._port_path_override
+            else:
+                logger.warning(f"Specified port {self._port_path_override} not found in available ports: {available_ports}.")
+                return None
+
+        logger.debug("Scanning for EvoThermal sensor by VENDOR_ID...")
         try:
             ports = list(serial.tools.list_ports.comports())
-            for port_info in ports:
-                if self.VENDOR_ID in port_info.hwid:
-                    logger.info(f"EvoThermal found on port {port_info.device}")
-                    return port_info.device
-            
-            logger.warning("EvoThermal device not found")
+            for p in ports:
+                if p.hwid and self.VENDOR_ID in p.hwid:
+                    logger.info(f"EvoThermal sensor found on port: {p.device} (HWID: {p.hwid})")
+                    return p.device
+            logger.warning(f"EvoThermal sensor with VENDOR_ID '{self.VENDOR_ID}' not found.")
             return None
-            
         except Exception as e:
-            logger.error(f"Error scanning for thermal sensor: {e}")
+            logger.error(f"Error occurred while scanning for serial ports: {e}", exc_info=True)
             return None
 
     def connect(self) -> bool:
-        """Connect to thermal sensor with error handling."""
-        try:
-            port_name = self._find_thermal_port()
-            if not port_name:
-                logger.warning("No thermal sensor found")
-                return False
-            
-            self.port = serial.Serial(
-                port=port_name,
-                baudrate=self.BAUDRATE,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE,
-                bytesize=serial.EIGHTBITS,
-                timeout=1.0
-            )
-            
-            if self.port.is_open:
-                self.is_connected = True
-                logger.info(f"Connected to thermal sensor on {port_name}")
-                return True
-            else:
-                logger.error("Failed to open thermal sensor port")
-                return False
-                
-        except serial.SerialException as e:
-            logger.error(f"Serial connection error: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"Unexpected error connecting to thermal sensor: {e}")
+        """Establishes connection to the thermal sensor."""
+        if self.is_connected and self.port and self.port.is_open:
+            logger.info(f"Already connected to thermal sensor on {self.port.name}.")
+            return True
+
+        # Disconnect if already initialized but not open, to be safe
+        if self.port: self.disconnect()
+
+        port_to_try = self._find_thermal_port()
+        if not port_to_try:
             return False
 
-    def is_running(self) -> bool:
-        """Check if thermal sensor is available and running."""
-        if not self.is_connected or not self.port:
-            return False
-            
-        try:
-            # Quick check if port is still available
-            port_name = self._find_thermal_port()
-            return port_name == self.port.name
-        except Exception:
-            return False
-
-    def _send_command(self, command: bytes) -> bool:
-        """Send command to thermal sensor with proper error handling."""
-        if not self.is_connected or not self.port:
-            logger.warning("Thermal sensor not connected")
-            return False
-            
         try:
             with self.serial_lock:
-                # Send command
-                self.port.write(command)
+                self.port = serial.Serial(
+                    port=port_to_try,
+                    baudrate=self.BAUDRATE,
+                    parity=serial.PARITY_NONE,
+                    stopbits=serial.STOPBITS_ONE,
+                    bytesize=serial.EIGHTBITS,
+                    timeout=0.5, # Shorter timeout for general ops, specific timeouts for blocking reads
+                    write_timeout=0.5
+                )
+
+            if self.port.is_open:
+                self.is_connected = True
+                logger.info(f"Successfully connected to EvoThermal sensor on {port_to_try}.")
+                # Optionally send a benign command to test communication here
+                return True
+            else:
+                logger.error(f"Failed to open serial port {port_to_try} (is_open is False after init).")
+                self.is_connected = False # Ensure state
+                return False
+        except serial.SerialException as e:
+            logger.error(f"SerialException while connecting to {port_to_try}: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Unexpected error connecting to {port_to_try}: {e}", exc_info=True)
+
+        self.is_connected = False # Ensure state if any error
+        self.port = None
+        return False
+
+    # is_running() method removed and archived.
+
+    def _send_command(self, command: bytes, expect_ack: bool = True) -> bool:
+        """Sends a command and optionally checks for ACK. Returns True on success."""
+        if not self.is_connected or not self.port or not self.port.is_open:
+            logger.warning(f"Sensor not connected. Cannot send command {command.hex()}.")
+            return False
+
+        try:
+            with self.serial_lock:
+                self.port.reset_input_buffer() # Clear stale data
+                bytes_written = self.port.write(command)
                 self.port.flush()
-                
-                # Read acknowledgment
-                ack = self.port.read(1)
-                if not ack:
-                    logger.warning("No acknowledgment received")
+                if bytes_written != len(command):
+                    logger.warning(f"Not all bytes of command {command.hex()} written: {bytes_written}/{len(command)}")
                     return False
-                
-                # Wait for ACK header
-                while len(ack) == 1 and ack[0] != self.ACK_HEADER:
-                    ack = self.port.read(1)
-                    if not ack:
-                        logger.warning("Timeout waiting for ACK header")
-                        return False
-                
-                # Read rest of ACK
-                ack += self.port.read(3)
-                if len(ack) != 4:
-                    logger.warning("Incomplete ACK received")
+                logger.debug(f"Command {command.hex()} sent ({bytes_written} bytes).")
+
+                if not expect_ack:
+                    return True
+
+                # Read ACK (expected: ACK_PACKET_SIZE bytes, e.g. 4 bytes)
+                ack_data = self.port.read(self.ACK_PACKET_SIZE)
+                if len(ack_data) != self.ACK_PACKET_SIZE:
+                    logger.warning(f"ACK for command {command.hex()} incomplete or timeout. Received: {ack_data.hex()}")
                     return False
-                
-                # Verify CRC
-                calculated_crc = self.crc8(ack[:3])
-                if calculated_crc != ack[3]:
-                    logger.warning("ACK CRC mismatch")
+
+                if ack_data[0] != self.ACK_HEADER_VALUE:
+                    logger.warning(f"Invalid ACK header for {command.hex()}: {ack_data[0]:02X} (expected {self.ACK_HEADER_VALUE:02X}). Full ACK: {ack_data.hex()}")
                     return False
-                
-                # Check ACK/NACK
-                if ack[2] == 0:
+
+                # CRC8 validation for ACK (first 3 bytes, 4th is CRC)
+                if self.crc8_func(ack_data[:self.ACK_PACKET_SIZE-1]) != ack_data[self.ACK_PACKET_SIZE-1]:
+                    logger.warning(f"ACK CRC8 mismatch for {command.hex()}. ACK: {ack_data.hex()}")
+                    return False
+
+                # Check status byte in ACK (e.g., byte 2, 0 means success)
+                if ack_data[2] == 0: # Assuming 0 is success
+                    logger.debug(f"Command {command.hex()} acknowledged successfully.")
                     return True
                 else:
-                    logger.warning("Command not acknowledged (NACK)")
+                    logger.warning(f"Command {command.hex()} NACK'd. Status byte: {ack_data[2]:02X}. ACK: {ack_data.hex()}")
                     return False
-                    
         except serial.SerialTimeoutException:
-            logger.error("Timeout during command transmission")
-            return False
+            logger.error(f"Write timeout sending command {command.hex()}.", exc_info=True)
         except serial.SerialException as e:
-            logger.error(f"Serial error during command: {e}")
-            return False
+            logger.error(f"SerialException sending command {command.hex()}: {e}", exc_info=True)
         except Exception as e:
-            logger.error(f"Unexpected error sending command: {e}")
-            return False
+            logger.error(f"Unexpected error sending command {command.hex()}: {e}", exc_info=True)
+        return False
 
-    def read_thermal_frame(self) -> np.ndarray:
-        """Read thermal frame with comprehensive error handling."""
-        if not self.is_connected or not self.port:
-            logger.warning("Thermal sensor not connected, returning empty frame")
-            return np.zeros(self.THERMAL_DIMENSIONS, dtype=np.float32)
-        
+    def read_thermal_frame(self) -> Optional[np.ndarray]:
+        """Reads a thermal frame. Activates, reads, then deactivates stream."""
+        if not self.is_connected:
+            logger.warning("Not connected, cannot read thermal frame.")
+            # Attempt re-connect if not connected
+            # if not self.connect(): return None
+            return None
+
+        if not self._send_command(self.CMD_ACTIVATE_STREAM):
+            logger.error("Failed to activate stream for frame read.")
+            self._send_command(self.CMD_DEACTIVATE_STREAM, expect_ack=False) # Attempt to clean up
+            return None
+
+        frame = self._read_raw_frame_packet()
+
+        if not self._send_command(self.CMD_DEACTIVATE_STREAM, expect_ack=True): # Expect ACK for deactivate
+            logger.warning("Failed to deactivate stream after frame read attempt.")
+            # This is not ideal, sensor might keep streaming. Consider port reset or re-connect.
+
+        return frame
+
+
+    def _read_raw_frame_packet(self) -> Optional[np.ndarray]:
+        """Reads and processes one raw frame data packet from the sensor."""
+        if not self.port or not self.port.is_open: return None
+
+        # Increased timeout specific for frame reading
+        # Original timeout for port is 0.5s. Frame reading needs more.
+        # Temporarily set longer timeout for this read operation if possible, or ensure port timeout is sufficient.
+        # For now, relying on multiple reads if data comes in chunks.
+
+        raw_frame_buffer = bytearray()
+        # Frame header is 2 bytes (e.g. 0x00 0x0D)
+        # FRAME_PACKET_SIZE includes these 2 header bytes, then data, then CRC
+        expected_bytes_total = self.FRAME_PACKET_SIZE
+
         try:
-            # Activate sensor
-            max_activation_attempts = 3
-            for attempt in range(max_activation_attempts):
-                if self._send_command(self.activate_command):
-                    break
-                if attempt == max_activation_attempts - 1:
-                    logger.error("Failed to activate thermal sensor")
-                    return np.zeros(self.THERMAL_DIMENSIONS, dtype=np.float32)
-                time.sleep(0.1)
-            
-            # Read frame data
-            frame_data = self._read_frame_data()
-            if frame_data is None:
-                return np.zeros(self.THERMAL_DIMENSIONS, dtype=np.float32)
-            
-            # Deactivate sensor
-            self._send_command(self.deactivate_command)
-            
-            return frame_data
-            
-        except Exception as e:
-            logger.error(f"Error reading thermal frame: {e}")
-            return np.zeros(self.THERMAL_DIMENSIONS, dtype=np.float32)
+            with self.serial_lock:
+                self.port.reset_input_buffer() # Clear buffer before reading frame
+                # Read until we get the full packet or timeout
+                # This loop tries to accumulate the full packet.
+                read_start_time = time.monotonic()
+                while len(raw_frame_buffer) < expected_bytes_total and (time.monotonic() - read_start_time) < 2.0: # 2s timeout for full frame
+                    bytes_to_read = min(self.port.in_waiting, expected_bytes_total - len(raw_frame_buffer)) if self.port.in_waiting > 0 else 1
+                    if bytes_to_read > 0:
+                         raw_frame_buffer.extend(self.port.read(bytes_to_read))
+                    if len(raw_frame_buffer) == expected_bytes_total: break
+                    time.sleep(0.005) # Short sleep to avoid pegging CPU
 
-    def _read_frame_data(self) -> Optional[np.ndarray]:
-        """Read and validate frame data."""
-        max_frame_attempts = 5
-        
-        for attempt in range(max_frame_attempts):
-            try:
-                with self.serial_lock:
-                    # Look for frame header
-                    header_bytes = self.port.read(2)
-                    if len(header_bytes) != 2:
-                        continue
-                    
-                    header = unpack('H', header_bytes)[0]
-                    if header != self.FRAME_HEADER:
-                        continue
-                    
-                    # Read frame data
-                    data_bytes = self.port.read(self.FRAME_SIZE)
-                    if len(data_bytes) != self.FRAME_SIZE:
-                        logger.warning(f"Incomplete frame data: {len(data_bytes)}/{self.FRAME_SIZE}")
-                        continue
-                    
-                    # Validate CRC
-                    calculated_crc = self.crc32(data_bytes[:self.DATA_SIZE])
-                    data_unpacked = unpack("H" * (self.FRAME_SIZE // 2), data_bytes)
-                    
-                    received_crc = ((data_unpacked[1032] & 0xFFFF) << 16) | (data_unpacked[1033] & 0xFFFF)
-                    
-                    if calculated_crc != received_crc:
-                        logger.warning(f"CRC mismatch: calculated={calculated_crc:08x}, received={received_crc:08x}")
-                        continue
-                    
-                    # Extract temperature data
-                    temp_data = np.array(data_unpacked[:1024], dtype=np.float32)
-                    temp_data = temp_data.reshape(self.THERMAL_DIMENSIONS)
-                    
-                    # Convert from decikelvin to Celsius
-                    temp_data = (temp_data / self.DATA_SCALE_FACTOR) - self.KELVIN_TO_CELSIUS
-                    
-                    # Flush input buffer
-                    self.port.reset_input_buffer()
-                    
-                    return temp_data
-                    
-            except Exception as e:
-                logger.warning(f"Frame read attempt {attempt + 1} failed: {e}")
-                if attempt == max_frame_attempts - 1:
-                    logger.error("All frame read attempts failed")
-        
+                if len(raw_frame_buffer) != expected_bytes_total:
+                    logger.warning(f"Incomplete frame packet: got {len(raw_frame_buffer)}/{expected_bytes_total} bytes. Data: {raw_frame_buffer.hex()}")
+                    return None
+
+            # Validate header (first 2 bytes)
+            # Assuming header is little-endian short (H) and its value is FRAME_HEADER_VALUE
+            frame_header = unpack('<H', raw_frame_buffer[:2])[0]
+            if frame_header != self.FRAME_HEADER_VALUE: # e.g. 0x000D
+                logger.warning(f"Frame header mismatch: {frame_header:#06x} (expected {self.FRAME_HEADER_VALUE:#06x}).")
+                return None
+
+            # CRC32 validation (on the thermal data part, before CRC itself)
+            # Thermal data starts after 2-byte header. Ends before 4-byte CRC.
+            data_for_crc_start_idx = 2
+            data_for_crc_end_idx = 2 + self.THERMAL_DATA_SIZE_BYTES
+            thermal_data_payload = raw_frame_buffer[data_for_crc_start_idx : data_for_crc_end_idx]
+
+            calculated_crc = self.crc32_func(thermal_data_payload)
+
+            # Received CRC is the last 4 bytes of the packet
+            received_crc_bytes = raw_frame_buffer[data_for_crc_end_idx : data_for_crc_end_idx + self.CRC_IN_FRAME_SIZE_BYTES]
+            received_crc = unpack('<I', received_crc_bytes)[0] # Little-endian unsigned int
+
+            if calculated_crc != received_crc:
+                logger.warning(f"Frame CRC32 mismatch. Calc: {calculated_crc:08X}, Recv: {received_crc:08X}.")
+                return None
+
+            # Extract thermal data (shorts), convert to Celsius
+            # Data is THERMAL_DATA_SIZE_BYTES, which is 1024 shorts (32*32*2)
+            num_shorts = self.THERMAL_RESOLUTION[0] * self.THERMAL_RESOLUTION[1]
+            thermal_values_short = unpack('<' + 'H' * num_shorts, thermal_data_payload[:num_shorts*2])
+
+            thermal_values_float = np.array(thermal_values_short, dtype=np.float32)
+            thermal_values_celsius = (thermal_values_float / self.DECIKELVIN_SCALE_FACTOR) - self.KELVIN_TO_CELSIUS_OFFSET
+
+            return thermal_values_celsius.reshape(self.THERMAL_RESOLUTION)
+
+        except serial.SerialException as e:
+            logger.error(f"SerialException during raw frame read: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Unexpected error during raw frame processing: {e}", exc_info=True)
         return None
 
-    def get_average_temperature(self, region: Optional[Tuple[int, int, int, int]] = None) -> float:
-        """Get average temperature from specified region or entire frame."""
-        frame = self.read_thermal_frame()
-        
-        if region:
-            x1, y1, x2, y2 = region
-            # Validate region bounds
-            x1 = max(0, min(x1, self.THERMAL_DIMENSIONS[1] - 1))
-            x2 = max(x1 + 1, min(x2, self.THERMAL_DIMENSIONS[1]))
-            y1 = max(0, min(y1, self.THERMAL_DIMENSIONS[0] - 1))
-            y2 = max(y1 + 1, min(y2, self.THERMAL_DIMENSIONS[0]))
-            
-            region_data = frame[y1:y2, x1:x2]
-        else:
-            region_data = frame
-        
-        return float(np.mean(region_data))
+    # get_average_temperature() method removed and archived.
 
     def disconnect(self) -> bool:
-        """Disconnect from thermal sensor."""
-        try:
-            if self.is_connected and self.port:
-                # Send deactivate command
-                self._send_command(self.deactivate_command)
-                
-                # Close port
-                self.port.close()
-                self.port = None
-                self.is_connected = False
-                
-                logger.info("Thermal sensor disconnected successfully")
-                return True
+        """Disconnects from the sensor. Returns True if successful or already disconnected."""
+        if not self.is_connected and (self.port is None or not self.port.is_open):
+            logger.debug("Already disconnected.")
             return True
-            
-        except Exception as e:
-            logger.error(f"Error disconnecting thermal sensor: {e}")
-            return False
+
+        logger.info("Disconnecting from EvoThermal sensor...")
+        if self.port and self.port.is_open:
+            try:
+                # Try to deactivate stream, but don't let it block final port closure
+                self._send_command(self.CMD_DEACTIVATE_STREAM, expect_ack=False) # Send deactivate, don't wait for ACK if problematic
+                with self.serial_lock:
+                    self.port.close()
+                logger.info("Serial port closed.")
+            except Exception as e:
+                logger.error(f"Error closing serial port: {e}", exc_info=True)
+
+        self.port = None
+        self.is_connected = False
+        return True # Assume disconnected even if errors occurred during close
 
     def __del__(self):
-        """Cleanup on object destruction."""
+        """Destructor to ensure resources are released."""
+        logger.debug(f"EvoThermalSensor instance for port '{self._port_path_override or 'auto'}' being deleted. Cleaning up...")
         self.disconnect()
 
-
-# Legacy compatibility class
-class EvoThermal:
-    """Legacy compatibility class for existing code."""
-    
-    def __init__(self):
-        self.sensor = EvoThermalSensor()
-        self.rounded_array = np.zeros((32, 32))
-
-    def running(self) -> bool:
-        """Legacy compatibility method."""
-        return self.sensor.is_running()
-
-    def get_thermals(self) -> np.ndarray:
-        """Legacy compatibility method."""
-        return self.sensor.read_thermal_frame()
-
-    def get_frame(self) -> np.ndarray:
-        """Legacy compatibility method."""
-        frame = self.sensor.read_thermal_frame()
-        self.rounded_array = np.round(frame, 0)
-        return self.rounded_array
-
-    def stop(self) -> bool:
-        """Legacy compatibility method."""
-        return self.sensor.disconnect()
-
-    def send_command(self, command) -> bool:
-        """Legacy compatibility method."""
-        return self.sensor._send_command(command)
-
-    def run(self):
-        """Legacy compatibility method."""
-        frame = self.get_thermals()
-        self.rounded_array = np.round(frame, 0)
-        # Note: update_GUI method was removed as it's not defined in original
+# Legacy EvoThermal class (and its methods) removed.
+# All usages should be updated to EvoThermalSensor or functions in archive.py.
